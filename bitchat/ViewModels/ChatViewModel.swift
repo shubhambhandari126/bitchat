@@ -1973,6 +1973,29 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, SynchronousMessage
         identityManager.isVouched(fingerprint: fingerprint)
     }
 
+    /// Whether this peer now claims a different nickname than the one its
+    /// trust was established under. Trust badges are suppressed in that case:
+    /// the seal attests to a key, but it is read next to a name, and a key that
+    /// renamed itself onto a name the user trusts is the impersonation this
+    /// warns about.
+    @MainActor
+    func trustedNicknameMismatch(_ fingerprint: String, claimedNickname: String) -> Bool {
+        identityManager.trustedNicknameMismatch(
+            fingerprint: fingerprint,
+            claimedNickname: claimedNickname
+        )
+    }
+
+    /// The same check for a name as *rendered* in a message row. See the
+    /// `displayedSender` overload on `SecureIdentityStateManagerProtocol`.
+    @MainActor
+    func trustedNicknameMismatch(_ fingerprint: String, displayedSender: String) -> Bool {
+        identityManager.trustedNicknameMismatch(
+            fingerprint: fingerprint,
+            displayedSender: displayedSender
+        )
+    }
+
     // MARK: - BitchatDelegate Methods
 
     // MARK: - Command Handling

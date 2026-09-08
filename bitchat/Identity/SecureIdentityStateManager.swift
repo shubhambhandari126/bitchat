@@ -130,6 +130,9 @@ protocol SecureIdentityStateManagerProtocol {
     func setVerified(fingerprint: String, verified: Bool)
     func isVerified(fingerprint: String) -> Bool
     func getVerifiedFingerprints() -> Set<String>
+    /// Whether this peer is now claiming a different nickname than the one its
+    /// trust was earned under.
+    func trustedNicknameMismatch(fingerprint: String, claimedNickname: String) -> Bool
 
     // MARK: Vouching (transitive verification)
     @discardableResult
@@ -148,6 +151,17 @@ protocol SecureIdentityStateManagerProtocol {
     // MARK: Private-media downgrade protection
     func markPrivateMediaCapable(fingerprint: String)
     func hasObservedPrivateMediaCapability(fingerprint: String) -> Bool
+}
+
+extension SecureIdentityStateManagerProtocol {
+    /// `trustedNicknameMismatch` for a name as *rendered* in a message row,
+    /// which may carry a `#abcd` disambiguation suffix that an announced
+    /// nickname never has. Comparing the displayed string verbatim would read
+    /// every suffixed sender as a mismatch.
+    func trustedNicknameMismatch(fingerprint: String, displayedSender: String) -> Bool {
+        trustedNicknameMismatch(fingerprint: fingerprint,
+                                claimedNickname: displayedSender.splitSuffix().0)
+    }
 }
 
 /// Singleton manager for secure identity state persistence and retrieval.
@@ -428,6 +442,15 @@ final class SecureIdentityStateManager: SecureIdentityStateManagerProtocol {
                 } else if self.cache.socialIdentities[fingerprint] == nil {
                     self.cache.socialIdentities[fingerprint] = identity
                 }
+                // A vouch usually arrives for a peer we have not seen announce
+                // — it comes over Noise from someone else, and the vouchee may
+                // be several hops away. There was no name to bind to then, so
+                // bind on the first announce we see while the trust stands.
+                self.pinTrustedNicknameLocked(
+                    fingerprint: fingerprint,
+                    overwrite: false,
+                    requireExistingTrust: true
+                )
             }
 
             self.saveIdentityCache()
@@ -678,9 +701,15 @@ final class SecureIdentityStateManager: SecureIdentityStateManagerProtocol {
                 var verifiedAt = self.cache.verifiedAt ?? [:]
                 verifiedAt[fingerprint] = Date()
                 self.cache.verifiedAt = verifiedAt
+                // Re-verifying overwrites the baseline: the user just checked
+                // this key again, under whatever name it presents now.
+                self.pinTrustedNicknameLocked(fingerprint: fingerprint, overwrite: true)
             } else {
                 self.cache.verifiedFingerprints.remove(fingerprint)
                 self.cache.verifiedAt?.removeValue(forKey: fingerprint)
+                if self.cache.vouchesByVouchee?[fingerprint]?.isEmpty ?? true {
+                    self.cache.trustedNicknames?.removeValue(forKey: fingerprint)
+                }
             }
 
             // Update trust level if social identity exists
@@ -696,6 +725,52 @@ final class SecureIdentityStateManager: SecureIdentityStateManagerProtocol {
     func isVerified(fingerprint: String) -> Bool {
         queue.sync {
             return cache.verifiedFingerprints.contains(fingerprint)
+        }
+    }
+
+    // MARK: - Nickname binding
+    //
+    // A vouch signs `voucheeFingerprint | voucheeSigningKey | timestampMs` and
+    // deliberately says nothing about a name — the attestation is right to stay
+    // name-free. But the badge is *rendered* next to a self-claimed nickname,
+    // so the binding has to exist somewhere, and the receiver is the only party
+    // that can hold it: it is the one that decided to trust this key while it
+    // was presenting a particular name.
+
+    /// Requires `queue`. Records the peer's currently claimed nickname as the
+    /// name its trust is bound to. Empty nicknames are not pinned — a key
+    /// verified before its first announce has no name to bind to, and pinning
+    /// "" would then read as a mismatch against every later announce.
+    ///
+    /// `requireExistingTrust` is for the announce path, which runs for every
+    /// peer: pinning a name before there is any trust would bind the badge to
+    /// whatever name we happened to see first, so a peer who renamed *before*
+    /// being vouched would have its legitimate badge suppressed.
+    private func pinTrustedNicknameLocked(fingerprint: String,
+                                          overwrite: Bool,
+                                          requireExistingTrust: Bool = false) {
+        if requireExistingTrust {
+            let trusted = cache.verifiedFingerprints.contains(fingerprint)
+                || !(cache.vouchesByVouchee?[fingerprint] ?? []).isEmpty
+            guard trusted else { return }
+        }
+        guard let claimed = cache.socialIdentities[fingerprint]?.claimedNickname,
+              !claimed.isEmpty else { return }
+        var pinned = cache.trustedNicknames ?? [:]
+        if !overwrite, pinned[fingerprint] != nil { return }
+        pinned[fingerprint] = claimed
+        cache.trustedNicknames = pinned
+    }
+
+    /// True only when a baseline exists AND the peer now claims something else.
+    /// Fails OPEN on a missing baseline on purpose: peers trusted by builds
+    /// before this existed have none, and dropping their badges on upgrade
+    /// would train users to ignore the signal.
+    func trustedNicknameMismatch(fingerprint: String, claimedNickname: String) -> Bool {
+        queue.sync {
+            guard let pinned = cache.trustedNicknames?[fingerprint], !pinned.isEmpty,
+                  !claimedNickname.isEmpty else { return false }
+            return pinned != claimedNickname
         }
     }
     
@@ -760,6 +835,10 @@ final class SecureIdentityStateManager: SecureIdentityStateManagerProtocol {
             var vouches = self.cache.vouchesByVouchee ?? [:]
             vouches[voucheeFingerprint] = capped
             self.cache.vouchesByVouchee = vouches
+            // Pin on the FIRST vouch only. A later vouch for the same key must
+            // not move the baseline, or an attacker could rename and then have
+            // a second voucher silently re-anchor the badge to the new name.
+            self.pinTrustedNicknameLocked(fingerprint: voucheeFingerprint, overwrite: false)
             self.saveIdentityCache()
             return true
         }
