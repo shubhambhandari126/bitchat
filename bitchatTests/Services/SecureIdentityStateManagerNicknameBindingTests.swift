@@ -1,13 +1,14 @@
 import Foundation
+import BitFoundation
 import Testing
 
 @testable import bitchat
 
-/// Binds a trust badge to the nickname it was earned under.
+/// Binds a trust seal to the nickname it was earned under.
 ///
 /// `VouchAttestation` signs `voucheeFingerprint | voucheeSigningKey |
 /// timestampMs` and deliberately says nothing about a name — a name-free
-/// attestation is the right wire format. But the badge is *rendered* beside a
+/// attestation is the right wire format. But the seal is *rendered* beside a
 /// self-claimed nickname, so the binding has to live on the receiver, which is
 /// the only party that knows what name the key was presenting when it decided
 /// to trust it. These tests pin that rule.
@@ -37,18 +38,24 @@ struct SecureIdentityStateManagerNicknameBindingTests {
         )
     }
 
+    private func setPetname(_ manager: SecureIdentityStateManager,
+                            _ fingerprint: String,
+                            _ petname: String?) {
+        guard var identity = manager.getSocialIdentity(for: fingerprint) else { return }
+        identity.localPetname = petname
+        manager.updateSocialIdentity(identity)
+    }
+
     // MARK: - The attack this closes
 
     @Test
-    func vouch_pinsTheNicknameItWasEarnedUnder() {
+    func vouchPinsTheNicknameItWasEarnedUnder() {
         let manager = makeManager()
         announce(manager, vouchee, as: "ravi")
         manager.setVerified(fingerprint: voucher, verified: true)
 
         #expect(manager.recordVouch(voucheeFingerprint: vouchee, voucherFingerprint: voucher, timestamp: Date()))
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "ravi"))
-        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "medic"),
-                "the baseline is pinned: any other name is a mismatch")
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee))
     }
 
     @Test
@@ -58,14 +65,11 @@ struct SecureIdentityStateManagerNicknameBindingTests {
         manager.setVerified(fingerprint: voucher, verified: true)
         manager.recordVouch(voucheeFingerprint: vouchee, voucherFingerprint: voucher, timestamp: Date())
 
-        // Same key, new self-chosen name — the badge must not follow it.
         announce(manager, vouchee, as: "medic")
 
         #expect(manager.isVouched(fingerprint: vouchee),
                 "the vouch itself is still valid; only its binding to a name broke")
-        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "medic"))
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "ravi"),
-                "the baseline stayed on the name the vouch was earned under")
+        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee))
     }
 
     @Test
@@ -76,12 +80,10 @@ struct SecureIdentityStateManagerNicknameBindingTests {
         manager.recordVouch(voucheeFingerprint: vouchee, voucherFingerprint: voucher, timestamp: Date())
         announce(manager, vouchee, as: "medic")
 
-        // A second vouch arriving after the rename must not launder it.
         manager.setVerified(fingerprint: secondVoucher, verified: true)
         manager.recordVouch(voucheeFingerprint: vouchee, voucherFingerprint: secondVoucher, timestamp: Date())
 
-        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "medic"))
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "ravi"),
+        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee),
                 "the second vouch did not launder the rename")
     }
 
@@ -95,21 +97,20 @@ struct SecureIdentityStateManagerNicknameBindingTests {
         let manager = makeManager()
         manager.setVerified(fingerprint: voucher, verified: true)
         manager.recordVouch(voucheeFingerprint: vouchee, voucherFingerprint: voucher, timestamp: Date())
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "ravi"),
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee),
                 "nothing is bound yet, so nothing can mismatch")
 
         announce(manager, vouchee, as: "ravi")
-        announce(manager, vouchee, as: "medic")
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee))
 
-        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "medic"))
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "ravi"),
-                "the first name seen while the vouch stood is the binding")
+        announce(manager, vouchee, as: "medic")
+        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee))
     }
 
     @Test
     func theAnnouncePathDoesNotBindBeforeTrustExists() {
         // Otherwise a peer who renamed BEFORE being vouched would be bound to
-        // the name we happened to see first, and lose a legitimate badge.
+        // the name we happened to see first, and lose a legitimate seal.
         let manager = makeManager()
         announce(manager, vouchee, as: "rav")
         announce(manager, vouchee, as: "ravi")
@@ -117,9 +118,8 @@ struct SecureIdentityStateManagerNicknameBindingTests {
         manager.setVerified(fingerprint: voucher, verified: true)
         manager.recordVouch(voucheeFingerprint: vouchee, voucherFingerprint: voucher, timestamp: Date())
 
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "ravi"),
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee),
                 "bound to the name it was vouched under, not the name seen first")
-        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "rav"))
     }
 
     @Test
@@ -134,8 +134,65 @@ struct SecureIdentityStateManagerNicknameBindingTests {
 
         announce(manager, vouchee, as: "medic")
 
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "medic"),
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee),
                 "known gap, pinned here so it is explicit rather than a surprise")
+    }
+
+    // MARK: - Not fooled by display decoration
+
+    @Test
+    func theCheckIsUnaffectedByCollisionSuffixes() {
+        // `PeerDisplayNameResolver` renders two CONNECTED peers who both claim
+        // "medic" as "medic#a1b2" and "medic#c3d4" — which is exactly what
+        // happens during this attack. Comparing a rendered name would drop the
+        // real medic's seal at the worst possible moment, so the check reads
+        // announced names only. This pins that the resolver really does
+        // decorate, and that the binding ignores it.
+        let real = PeerDisplayNameResolver.resolve(
+            [(peerID: PeerID(str: "a1b2c3d4"), nickname: "medic", isConnected: true),
+             (peerID: PeerID(str: "c3d4e5f6"), nickname: "medic", isConnected: true)],
+            selfNickname: "me")
+        #expect(real[PeerID(str: "a1b2c3d4")] == "medic#a1b2", "the resolver does decorate")
+
+        let manager = makeManager()
+        announce(manager, vouchee, as: "medic")
+        manager.setVerified(fingerprint: vouchee, verified: true)
+        announce(manager, vouchee, as: "medic")   // still "medic" on the wire
+
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee),
+                "the impersonated peer keeps its seal while a namesake is connected")
+    }
+
+    @Test
+    func aLocalPetnameKeepsTheSeal() {
+        // A petname outranks the claimed nickname everywhere it is displayed,
+        // so a rename cannot spoof anything and the seal stands.
+        let manager = makeManager()
+        announce(manager, vouchee, as: "ravi")
+        manager.setVerified(fingerprint: vouchee, verified: true)
+        announce(manager, vouchee, as: "medic")
+        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee))
+
+        setPetname(manager, vouchee, "my neighbour")
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee))
+
+        setPetname(manager, vouchee, nil)
+        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee))
+    }
+
+    @Test
+    func namesAreComparedInCanonicalForm() {
+        // Same rule as `normalizedNickname` everywhere else: a decomposed and a
+        // precomposed "café" are one name, not a rename.
+        let manager = makeManager()
+        announce(manager, vouchee, as: "cafe\u{0301}")        // e + combining acute
+        manager.setVerified(fingerprint: vouchee, verified: true)
+
+        announce(manager, vouchee, as: "caf\u{00E9}")          // precomposed é
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee))
+
+        announce(manager, vouchee, as: "cafe")
+        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee))
     }
 
     // MARK: - Rebinding and clearing
@@ -147,13 +204,12 @@ struct SecureIdentityStateManagerNicknameBindingTests {
         manager.setVerified(fingerprint: voucher, verified: true)
         manager.recordVouch(voucheeFingerprint: vouchee, voucherFingerprint: voucher, timestamp: Date())
         announce(manager, vouchee, as: "medic")
+        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee))
 
         // The user scanned this key themselves, under the name it shows now.
         manager.setVerified(fingerprint: vouchee, verified: true)
 
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "medic"))
-        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "ravi"),
-                "the baseline moved to the name just checked in person")
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee))
     }
 
     @Test
@@ -162,71 +218,39 @@ struct SecureIdentityStateManagerNicknameBindingTests {
         announce(manager, vouchee, as: "ravi")
 
         manager.setVerified(fingerprint: vouchee, verified: true)
-        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "medic"))
+        announce(manager, vouchee, as: "medic")
+        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee))
+
         manager.setVerified(fingerprint: vouchee, verified: false)
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "medic"),
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee),
                 "with no trust left there is no baseline, so nothing to mismatch")
 
         // With a vouch still standing, the baseline has to survive: it is what
-        // that vouch's badge is bound to.
+        // that vouch's seal is bound to.
+        announce(manager, vouchee, as: "ravi")
         manager.setVerified(fingerprint: voucher, verified: true)
         manager.recordVouch(voucheeFingerprint: vouchee, voucherFingerprint: voucher, timestamp: Date())
         manager.setVerified(fingerprint: vouchee, verified: true)
         manager.setVerified(fingerprint: vouchee, verified: false)
-        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "medic"),
-                "the vouch's badge still needs the name it was bound to")
-    }
-
-    // MARK: - Names as rendered in a message row
-
-    @Test
-    func aDisambiguationSuffixIsNotMistakenForARename() {
-        // Message senders render as "ravi#a1b2" when nicknames collide; the
-        // announced nickname never carries the suffix.
-        let manager = makeManager()
-        announce(manager, vouchee, as: "ravi")
-        manager.setVerified(fingerprint: vouchee, verified: true)
-
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, displayedSender: "ravi#a1b2"))
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, displayedSender: "@ravi#a1b2"))
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, displayedSender: "ravi"))
-    }
-
-    @Test
-    func aRenameIsStillCaughtThroughTheSuffix() {
-        let manager = makeManager()
-        announce(manager, vouchee, as: "ravi")
-        manager.setVerified(fingerprint: vouchee, verified: true)
-
-        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee, displayedSender: "medic#a1b2"))
-        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee, displayedSender: "medic"))
-    }
-
-    @Test
-    func aNameEndingInSomethingSuffixLikeIsNotTruncated() {
-        // "#abcd" only counts as a suffix when those four characters are hex;
-        // a nickname that merely contains '#' must still compare whole.
-        let manager = makeManager()
-        announce(manager, vouchee, as: "ravi#zzzz")
-        manager.setVerified(fingerprint: vouchee, verified: true)
-
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, displayedSender: "ravi#zzzz"))
-        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee, displayedSender: "ravi"))
+        announce(manager, vouchee, as: "medic")
+        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee),
+                "the vouch's seal still needs the name it was bound to")
     }
 
     // MARK: - Failing open
 
     @Test
-    func aMissingBaselineNeverSuppressesABadge() {
+    func aMissingBaselineNeverSuppressesASeal() {
         // Verified before the peer ever announced a name — there is nothing to
         // bind to, and pinning "" would read as a mismatch against every later
         // announce. Peers trusted by builds before this shipped land here too,
-        // so an upgrade must not silently drop their badges.
+        // so an upgrade must not silently drop their seals.
         let manager = makeManager()
         manager.setVerified(fingerprint: vouchee, verified: true)
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee))
 
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "medic"))
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: "ravi"))
+        announce(manager, vouchee, as: "medic")
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee))
     }
 
     @Test
@@ -234,8 +258,9 @@ struct SecureIdentityStateManagerNicknameBindingTests {
         let manager = makeManager()
         announce(manager, vouchee, as: "ravi")
         manager.setVerified(fingerprint: vouchee, verified: true)
+        announce(manager, vouchee, as: "")
 
-        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee, claimedNickname: ""))
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee))
     }
 
     // MARK: - Persistence compatibility

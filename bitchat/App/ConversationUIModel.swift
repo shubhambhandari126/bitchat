@@ -165,10 +165,9 @@ final class ConversationUIModel: ObservableObject {
               let peerID = message.senderPeerID else { return false }
         guard let fingerprint = chatViewModel.getFingerprint(for: peerID) else { return false }
         guard chatViewModel.peerIdentityStore.isVerified(fingerprint) else { return false }
-        // The seal is read next to `message.sender`, so it has to be bound to
-        // that name: a verified key that renamed itself onto a name the user
-        // trusts must not carry the seal beside the new one.
-        return !chatViewModel.trustedNicknameMismatch(fingerprint, displayedSender: message.sender)
+        // A verified key that renamed itself onto a name the user trusts must
+        // not carry the seal beside the new one.
+        return !chatViewModel.trustedNicknameMismatch(fingerprint)
     }
 
     func senderDisplayName(for peerID: PeerID, fallbackMessages: [BitchatMessage]) -> String? {

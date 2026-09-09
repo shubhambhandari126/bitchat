@@ -130,9 +130,9 @@ protocol SecureIdentityStateManagerProtocol {
     func setVerified(fingerprint: String, verified: Bool)
     func isVerified(fingerprint: String) -> Bool
     func getVerifiedFingerprints() -> Set<String>
-    /// Whether this peer is now claiming a different nickname than the one its
+    /// Whether this peer now announces a different nickname than the one its
     /// trust was earned under.
-    func trustedNicknameMismatch(fingerprint: String, claimedNickname: String) -> Bool
+    func trustedNicknameMismatch(fingerprint: String) -> Bool
 
     // MARK: Vouching (transitive verification)
     @discardableResult
@@ -151,17 +151,6 @@ protocol SecureIdentityStateManagerProtocol {
     // MARK: Private-media downgrade protection
     func markPrivateMediaCapable(fingerprint: String)
     func hasObservedPrivateMediaCapability(fingerprint: String) -> Bool
-}
-
-extension SecureIdentityStateManagerProtocol {
-    /// `trustedNicknameMismatch` for a name as *rendered* in a message row,
-    /// which may carry a `#abcd` disambiguation suffix that an announced
-    /// nickname never has. Comparing the displayed string verbatim would read
-    /// every suffixed sender as a mismatch.
-    func trustedNicknameMismatch(fingerprint: String, displayedSender: String) -> Bool {
-        trustedNicknameMismatch(fingerprint: fingerprint,
-                                claimedNickname: displayedSender.splitSuffix().0)
-    }
 }
 
 /// Singleton manager for secure identity state persistence and retrieval.
@@ -762,15 +751,31 @@ final class SecureIdentityStateManager: SecureIdentityStateManagerProtocol {
         cache.trustedNicknames = pinned
     }
 
-    /// True only when a baseline exists AND the peer now claims something else.
+    /// True only when a baseline exists AND the peer now announces something
+    /// else.
+    ///
+    /// Deliberately compares announced name to announced name rather than to
+    /// anything on screen. Display strings are decorated: `PeerDisplayNameResolver`
+    /// appends `#abcd` to CONNECTED peers whose nicknames collide — which is
+    /// precisely what happens during this attack — so comparing a rendered name
+    /// would suppress the seal of the peer being impersonated, exactly when it
+    /// matters most.
+    ///
     /// Fails OPEN on a missing baseline on purpose: peers trusted by builds
-    /// before this existed have none, and dropping their badges on upgrade
-    /// would train users to ignore the signal.
-    func trustedNicknameMismatch(fingerprint: String, claimedNickname: String) -> Bool {
+    /// before this existed have none, and dropping their seals on upgrade would
+    /// train users to ignore the signal.
+    func trustedNicknameMismatch(fingerprint: String) -> Bool {
         queue.sync {
-            guard let pinned = cache.trustedNicknames?[fingerprint], !pinned.isEmpty,
-                  !claimedNickname.isEmpty else { return false }
-            return pinned != claimedNickname
+            guard let pinned = cache.trustedNicknames?[fingerprint], !pinned.isEmpty
+            else { return false }
+            let social = cache.socialIdentities[fingerprint]
+            // A local petname outranks the claimed nickname everywhere it is
+            // displayed, so there is nothing to spoof and the seal stands.
+            if let petname = social?.localPetname, !petname.isEmpty { return false }
+            guard let claimed = social?.claimedNickname, !claimed.isEmpty else { return false }
+            // NFC, matching `normalizedNickname` everywhere else nicknames are
+            // compared: a decomposed and a precomposed "café" are one name.
+            return pinned.normalizedNickname != claimed.normalizedNickname
         }
     }
     

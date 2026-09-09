@@ -100,10 +100,12 @@ final class MockIdentityManager: SecureIdentityStateManagerProtocol {
 
     var trustedNicknames: [String: String] = [:]
 
-    func trustedNicknameMismatch(fingerprint: String, claimedNickname: String) -> Bool {
+    var claimedNicknames: [String: String] = [:]
+
+    func trustedNicknameMismatch(fingerprint: String) -> Bool {
         guard let pinned = trustedNicknames[fingerprint], !pinned.isEmpty,
-              !claimedNickname.isEmpty else { return false }
-        return pinned != claimedNickname
+              let claimed = claimedNicknames[fingerprint], !claimed.isEmpty else { return false }
+        return pinned != claimed
     }
 
     func isVerified(fingerprint: String) -> Bool {

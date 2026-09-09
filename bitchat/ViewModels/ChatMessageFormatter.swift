@@ -449,9 +449,9 @@ private extension ChatMessageFormatter {
             return false
         }
         guard viewModel.peerIdentityStore.isVerified(fingerprint) else { return false }
-        // Bound to the rendered name, for the same reason as the peer list and
-        // the DM seal: the badge attests to a key but is read as a name.
-        return !viewModel.trustedNicknameMismatch(fingerprint, displayedSender: message.sender)
+        // Bound to the name the key announces, for the same reason as the peer
+        // list and the DM seal: the badge attests to a key but is read as a name.
+        return !viewModel.trustedNicknameMismatch(fingerprint)
     }
 
     func appendVerifiedSeal(
