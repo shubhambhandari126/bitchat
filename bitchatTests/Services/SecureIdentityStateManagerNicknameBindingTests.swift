@@ -195,6 +195,91 @@ struct SecureIdentityStateManagerNicknameBindingTests {
         #expect(manager.trustedNicknameMismatch(fingerprint: vouchee))
     }
 
+    // MARK: - A seal beside a name frozen on a message row
+
+    @Test
+    func renamingBackDoesNotRestoreTheSealOnARowPostedUnderTheOtherName() {
+        // The hole in checking only the CURRENT name: a message row renders
+        // `message.sender` frozen at receipt, so rename away, post, rename
+        // back, and the live name matches the baseline again while the archived
+        // row still reads the name it was posted under.
+        let manager = makeManager()
+        announce(manager, vouchee, as: "ravi")
+        manager.setVerified(fingerprint: vouchee, verified: true)
+
+        announce(manager, vouchee, as: "medic")          // rename
+        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee))
+        announce(manager, vouchee, as: "ravi")           // ...and back
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee),
+                "the live name is bound again, which is why the live check alone is not enough")
+
+        #expect(!manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "medic"),
+                "the row posted as medic must not be sealed")
+        #expect(manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "ravi"),
+                "a row posted as ravi still is — that row really was ravi")
+    }
+
+    @Test
+    func aHistoricalRowKeepsItsSealWhileTheKeyIsCurrentlyRenamed() {
+        // The converse, so the rule is not simply "suppress harder": a row
+        // posted under the verified name stays truthful even once that key has
+        // moved on, otherwise ordinary renames retroactively unseal history.
+        let manager = makeManager()
+        announce(manager, vouchee, as: "ravi")
+        manager.setVerified(fingerprint: vouchee, verified: true)
+        announce(manager, vouchee, as: "medic")
+
+        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee), "live name is unbound")
+        #expect(manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "ravi"),
+                "but the archived ravi row is still accurate")
+        #expect(!manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "medic"))
+    }
+
+    @Test
+    func aRowSenderCarryingACollisionSuffixIsStillMatched() {
+        // Message senders render as "ravi#a1b2" when nicknames collide. Only a
+        // trailing #abcd is stripped — `splitSuffix()` would also remove every
+        // "@", and nothing forbids one in a nickname.
+        let manager = makeManager()
+        announce(manager, vouchee, as: "ravi@hq")
+        manager.setVerified(fingerprint: vouchee, verified: true)
+
+        #expect(manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "ravi@hq"))
+        #expect(manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "ravi@hq#a1b2"))
+        #expect(!manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "ravi"))
+        #expect(!manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "medic#a1b2"))
+    }
+
+    @Test
+    func aRowIsNotSealedForAnUnverifiedKeyAndFailsOpenWithNoBaseline() {
+        let manager = makeManager()
+        announce(manager, vouchee, as: "ravi")
+        #expect(!manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "ravi"),
+                "no verification, no seal")
+
+        // Verified before any announce: nothing bound, so rows stay sealed as
+        // they did before this existed.
+        let unbound = makeManager()
+        unbound.setVerified(fingerprint: vouchee, verified: true)
+        #expect(unbound.sealAppliesToRow(fingerprint: vouchee, renderedSender: "anything"))
+    }
+
+    @Test
+    func theCombinedLiveQueryAgreesWithItsParts() {
+        let manager = makeManager()
+        announce(manager, vouchee, as: "ravi")
+        #expect(!manager.isVerifiedAndNameBound(fingerprint: vouchee), "not verified yet")
+
+        manager.setVerified(fingerprint: vouchee, verified: true)
+        #expect(manager.isVerifiedAndNameBound(fingerprint: vouchee))
+        #expect(manager.trustedNickname(fingerprint: vouchee) == "ravi")
+
+        announce(manager, vouchee, as: "medic")
+        #expect(!manager.isVerifiedAndNameBound(fingerprint: vouchee))
+        #expect(manager.trustedNickname(fingerprint: vouchee) == "ravi",
+                "the baseline is what the sheet needs to name")
+    }
+
     // MARK: - Rebinding and clearing
 
     @Test

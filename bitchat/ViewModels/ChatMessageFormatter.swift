@@ -448,10 +448,10 @@ private extension ChatMessageFormatter {
               let fingerprint = viewModel.getFingerprint(for: peerID) else {
             return false
         }
-        guard viewModel.peerIdentityStore.isVerified(fingerprint) else { return false }
-        // Bound to the name the key announces, for the same reason as the peer
-        // list and the DM seal: the badge attests to a key but is read as a name.
-        return !viewModel.trustedNicknameMismatch(fingerprint)
+        // Bound to the name ON THIS ROW, which is frozen at receipt — see
+        // `sealAppliesToRow`. This check feeds the format cache key, so the
+        // cache does not shield it; a single call keeps it to one lock.
+        return viewModel.sealAppliesToRow(fingerprint, renderedSender: message.sender)
     }
 
     func appendVerifiedSeal(

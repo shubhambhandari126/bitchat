@@ -130,9 +130,19 @@ protocol SecureIdentityStateManagerProtocol {
     func setVerified(fingerprint: String, verified: Bool)
     func isVerified(fingerprint: String) -> Bool
     func getVerifiedFingerprints() -> Set<String>
+    /// The nickname `fingerprint` was announcing when trust in it was
+    /// established, or nil if nothing was bound. Shown to the user, so a sheet
+    /// can say *which* name was verified rather than only that one changed.
+    func trustedNickname(fingerprint: String) -> String?
     /// Whether this peer now announces a different nickname than the one its
     /// trust was earned under.
     func trustedNicknameMismatch(fingerprint: String) -> Bool
+    /// Verified AND still presenting the name it was verified under — what a
+    /// seal beside a LIVE name is actually asserting. One lock, not two.
+    func isVerifiedAndNameBound(fingerprint: String) -> Bool
+    /// Verified AND `renderedSender` is the name it was verified under — what
+    /// a seal beside a name frozen on a message row is asserting.
+    func sealAppliesToRow(fingerprint: String, renderedSender: String) -> Bool
 
     // MARK: Vouching (transitive verification)
     @discardableResult
@@ -151,6 +161,26 @@ protocol SecureIdentityStateManagerProtocol {
     // MARK: Private-media downgrade protection
     func markPrivateMediaCapable(fingerprint: String)
     func hasObservedPrivateMediaCapability(fingerprint: String) -> Bool
+}
+
+extension SecureIdentityStateManagerProtocol {
+    // Default implementations so a conformance only has to provide the two
+    // primitives. `SecureIdentityStateManager` overrides both to answer in a
+    // single lock acquisition — these seal checks run per row, per render, and
+    // the format cache does not shield the one in ChatMessageFormatter because
+    // the answer is part of its cache key.
+    func isVerifiedAndNameBound(fingerprint: String) -> Bool {
+        isVerified(fingerprint: fingerprint) && !trustedNicknameMismatch(fingerprint: fingerprint)
+    }
+
+    func sealAppliesToRow(fingerprint: String, renderedSender: String) -> Bool {
+        guard isVerified(fingerprint: fingerprint) else { return false }
+        guard let pinned = trustedNickname(fingerprint: fingerprint), !pinned.isEmpty
+        else { return true }
+        let shown = renderedSender.withoutCollisionSuffix
+        guard !shown.isEmpty else { return true }
+        return pinned.normalizedNickname == shown.normalizedNickname
+    }
 }
 
 /// Singleton manager for secure identity state persistence and retrieval.
@@ -765,18 +795,53 @@ final class SecureIdentityStateManager: SecureIdentityStateManagerProtocol {
     /// before this existed have none, and dropping their seals on upgrade would
     /// train users to ignore the signal.
     func trustedNicknameMismatch(fingerprint: String) -> Bool {
+        queue.sync { liveNameMismatchLocked(fingerprint) }
+    }
+
+    func trustedNickname(fingerprint: String) -> String? {
+        queue.sync { cache.trustedNicknames?[fingerprint] }
+    }
+
+    func isVerifiedAndNameBound(fingerprint: String) -> Bool {
         queue.sync {
-            guard let pinned = cache.trustedNicknames?[fingerprint], !pinned.isEmpty
-            else { return false }
-            let social = cache.socialIdentities[fingerprint]
-            // A local petname outranks the claimed nickname everywhere it is
-            // displayed, so there is nothing to spoof and the seal stands.
-            if let petname = social?.localPetname, !petname.isEmpty { return false }
-            guard let claimed = social?.claimedNickname, !claimed.isEmpty else { return false }
-            // NFC, matching `normalizedNickname` everywhere else nicknames are
-            // compared: a decomposed and a precomposed "café" are one name.
-            return pinned.normalizedNickname != claimed.normalizedNickname
+            guard cache.verifiedFingerprints.contains(fingerprint) else { return false }
+            return !liveNameMismatchLocked(fingerprint)
         }
+    }
+
+    /// A message row shows the sender name frozen at receipt, so asking about
+    /// the peer's CURRENT name is the wrong question: rename away, post, rename
+    /// back, and the live name matches the baseline again while the archived row
+    /// still reads the name it was posted under. Each row is therefore checked
+    /// against its own name, which also makes every row self-consistent — a
+    /// historical "ravi ✓" stays sealed even while that key is currently
+    /// renamed, because that row really was ravi.
+    func sealAppliesToRow(fingerprint: String, renderedSender: String) -> Bool {
+        queue.sync {
+            guard cache.verifiedFingerprints.contains(fingerprint) else { return false }
+            guard let pinned = cache.trustedNicknames?[fingerprint], !pinned.isEmpty
+            else { return true }                                  // nothing bound: fail open
+            // No petname escape here, unlike the live check: the formatter
+            // renders `message.sender`, never a petname, so a petname does not
+            // stand between the reader and a spoofed name on this row.
+            let shown = renderedSender.withoutCollisionSuffix
+            guard !shown.isEmpty else { return true }
+            return pinned.normalizedNickname == shown.normalizedNickname
+        }
+    }
+
+    /// Requires `queue`.
+    private func liveNameMismatchLocked(_ fingerprint: String) -> Bool {
+        guard let pinned = cache.trustedNicknames?[fingerprint], !pinned.isEmpty
+        else { return false }
+        let social = cache.socialIdentities[fingerprint]
+        // A local petname outranks the claimed nickname everywhere a LIVE name
+        // is displayed, so there is nothing to spoof and the seal stands.
+        if let petname = social?.localPetname, !petname.isEmpty { return false }
+        guard let claimed = social?.claimedNickname, !claimed.isEmpty else { return false }
+        // NFC, matching `normalizedNickname` everywhere else nicknames are
+        // compared: a decomposed and a precomposed "café" are one name.
+        return pinned.normalizedNickname != claimed.normalizedNickname
     }
     
     func getVerifiedFingerprints() -> Set<String> {

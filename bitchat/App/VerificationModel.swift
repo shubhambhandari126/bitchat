@@ -16,6 +16,15 @@ struct FingerprintPresentationState: Equatable {
     let voucherCount: Int
     /// Display names of the (verified) vouchers, where known.
     let voucherNames: [String]
+    /// The nickname this key was announcing when it was verified or first
+    /// vouched, if anything was bound. Non-nil and different from the name on
+    /// screen is what `nameChangedSinceVerification` reports.
+    let verifiedAsNickname: String?
+    /// The key is trusted, but it now announces a different name than when
+    /// that trust was established. The sheet is the one place this should be
+    /// explained rather than collapsed into a glyph, so it is surfaced here
+    /// instead of silently suppressing the badge.
+    let nameChangedSinceVerification: Bool
 
     /// Vouched for by ≥1 peer the user verified (and not explicitly verified).
     var isVouched: Bool { voucherCount > 0 }
@@ -136,6 +145,13 @@ final class VerificationModel: ObservableObject {
         let isVerified = theirFingerprint.map { peerIdentityStore.isVerified($0) } ?? false
         let localPetname = theirFingerprint
             .flatMap { chatViewModel.identityManager.getSocialIdentity(for: $0)?.localPetname }
+        // A vouched seal is bound to the name it was earned under, exactly like
+        // the verified one. Missing baseline means nothing was bound, so this
+        // fails open like every other site.
+        let nameBound = theirFingerprint
+            .map { !chatViewModel.identityManager.trustedNicknameMismatch(fingerprint: $0) } ?? true
+        let verifiedAsNickname = theirFingerprint
+            .flatMap { chatViewModel.identityManager.trustedNickname(fingerprint: $0) }
 
         // Vouch state is recomputed on read: only vouchers still in the
         // verified set count, so removing a verification silently retires the
@@ -161,8 +177,12 @@ final class VerificationModel: ObservableObject {
             myFingerprint: chatViewModel.getMyFingerprint(),
             isVerified: isVerified,
             localPetname: localPetname,
-            voucherCount: vouchers.count,
-            voucherNames: voucherNames
+            // Suppressed together: a voucher list beside a name nobody
+            // vouched for is the same claim as the seal itself.
+            voucherCount: nameBound ? vouchers.count : 0,
+            voucherNames: nameBound ? voucherNames : [],
+            verifiedAsNickname: verifiedAsNickname,
+            nameChangedSinceVerification: !nameBound
         )
     }
 

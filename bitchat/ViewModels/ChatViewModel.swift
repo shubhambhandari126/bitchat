@@ -1982,6 +1982,20 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, SynchronousMessage
         identityManager.trustedNicknameMismatch(fingerprint: fingerprint)
     }
 
+    /// The name this key was verified under, for a sheet that needs to say
+    /// which one it was.
+    @MainActor
+    func trustedNickname(_ fingerprint: String) -> String? {
+        identityManager.trustedNickname(fingerprint: fingerprint)
+    }
+
+    /// A seal beside a name frozen on a message row: is THAT name the one this
+    /// key was verified under? See `sealAppliesToRow`.
+    @MainActor
+    func sealAppliesToRow(_ fingerprint: String, renderedSender: String) -> Bool {
+        identityManager.sealAppliesToRow(fingerprint: fingerprint, renderedSender: renderedSender)
+    }
+
     // MARK: - BitchatDelegate Methods
 
     // MARK: - Command Handling

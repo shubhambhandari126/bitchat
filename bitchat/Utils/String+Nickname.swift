@@ -17,6 +17,21 @@ extension String {
         precomposedStringWithCanonicalMapping
     }
 
+    /// Strips ONLY a trailing `#abcd` collision suffix, leaving everything
+    /// else alone.
+    ///
+    /// Deliberately not `splitSuffix()`: that also removes every `@` in the
+    /// string, which is right for parsing a mention but wrong for comparing a
+    /// nickname — nothing in `validateNickname` forbids `@`, so `ravi@hq`
+    /// would compare unequal to itself.
+    var withoutCollisionSuffix: String {
+        guard count >= 5 else { return self }
+        let tail = suffix(5)
+        guard tail.first == "#",
+              tail.dropFirst().allSatisfy({ $0.isHexDigit }) else { return self }
+        return String(dropLast(5))
+    }
+
     /// Split a nickname into base and a '#abcd' suffix if present
     func splitSuffix() -> (String, String) {
         let name = self.replacingOccurrences(of: "@", with: "")
