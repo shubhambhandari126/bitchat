@@ -179,7 +179,7 @@ extension SecureIdentityStateManagerProtocol {
         else { return true }
         let shown = renderedSender.withoutCollisionSuffix
         guard !shown.isEmpty else { return true }
-        return pinned.normalizedNickname == shown.normalizedNickname
+        return pinned.nicknameBindingKey == shown.nicknameBindingKey
     }
 }
 
@@ -826,7 +826,7 @@ final class SecureIdentityStateManager: SecureIdentityStateManagerProtocol {
             // stand between the reader and a spoofed name on this row.
             let shown = renderedSender.withoutCollisionSuffix
             guard !shown.isEmpty else { return true }
-            return pinned.normalizedNickname == shown.normalizedNickname
+            return pinned.nicknameBindingKey == shown.nicknameBindingKey
         }
     }
 
@@ -839,9 +839,9 @@ final class SecureIdentityStateManager: SecureIdentityStateManagerProtocol {
         // is displayed, so there is nothing to spoof and the seal stands.
         if let petname = social?.localPetname, !petname.isEmpty { return false }
         guard let claimed = social?.claimedNickname, !claimed.isEmpty else { return false }
-        // NFC, matching `normalizedNickname` everywhere else nicknames are
-        // compared: a decomposed and a precomposed "café" are one name.
-        return pinned.normalizedNickname != claimed.normalizedNickname
+        // See `nicknameBindingKey`: NFC plus case, so a decomposed and a
+        // precomposed "café" are one name and recasing is not a rename.
+        return pinned.nicknameBindingKey != claimed.nicknameBindingKey
     }
     
     func getVerifiedFingerprints() -> Set<String> {

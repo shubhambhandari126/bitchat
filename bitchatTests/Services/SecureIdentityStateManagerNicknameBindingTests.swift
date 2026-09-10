@@ -280,6 +280,54 @@ struct SecureIdentityStateManagerNicknameBindingTests {
                 "the baseline is what the sheet needs to name")
     }
 
+    // MARK: - What counts as the same name
+
+    @Test
+    func recasingYourOwnNicknameIsNotARename() {
+        // Found auditing my own revision: the binding compared NFC only, so
+        // changing "Ravi" to "ravi" broke it and silently dropped the seal.
+        let manager = makeManager()
+        announce(manager, vouchee, as: "Ravi")
+        manager.setVerified(fingerprint: vouchee, verified: true)
+
+        announce(manager, vouchee, as: "ravi")
+        #expect(!manager.trustedNicknameMismatch(fingerprint: vouchee))
+        #expect(manager.isVerifiedAndNameBound(fingerprint: vouchee))
+        #expect(manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "RAVI"))
+    }
+
+    @Test
+    func aLookAlikeNameDoesBreakTheBinding() {
+        // The other half of that: the binding key is NFC, deliberately not
+        // NFKC. A fullwidth Ｍ merely LOOKS like M, so it is a different name
+        // and must break the binding — folding look-alikes is the collision
+        // resolver's job, which answers a different question.
+        let manager = makeManager()
+        announce(manager, vouchee, as: "Medic")
+        manager.setVerified(fingerprint: vouchee, verified: true)
+
+        announce(manager, vouchee, as: "\u{FF2D}edic")
+        #expect(manager.trustedNicknameMismatch(fingerprint: vouchee))
+        #expect(!manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "\u{FF2D}edic"))
+    }
+
+    @Test
+    func onlyAnAsciiCollisionSuffixIsStripped() {
+        // `Character.isHexDigit` also accepts fullwidth digits, so a nickname
+        // literally ending in "#ＡＢＣＤ" was being truncated and could then
+        // match a baseline it is not. ASCII only, like `splitSuffix()`.
+        let manager = makeManager()
+        announce(manager, vouchee, as: "medic")
+        manager.setVerified(fingerprint: vouchee, verified: true)
+
+        #expect(manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "medic#a1b2"))
+        #expect(!manager.sealAppliesToRow(fingerprint: vouchee,
+                                          renderedSender: "medic#\u{FF21}\u{FF22}\u{FF23}\u{FF24}"),
+                "a fullwidth tail is part of the name, not a suffix this device generates")
+        #expect(!manager.sealAppliesToRow(fingerprint: vouchee, renderedSender: "medic#zzzz"),
+                "non-hex is part of the name too")
+    }
+
     // MARK: - Rebinding and clearing
 
     @Test

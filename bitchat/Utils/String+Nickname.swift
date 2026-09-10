@@ -17,6 +17,22 @@ extension String {
         precomposedStringWithCanonicalMapping
     }
 
+    /// The form two nicknames are compared in to decide whether they are the
+    /// SAME NAME — used for the verified-name binding.
+    ///
+    /// NFC plus a locale-independent case fold, twice normalised because case
+    /// folding can itself emit decomposed sequences (Turkish İ lowercases to
+    /// i + U+0307). Recasing your own nickname is not a rename, so it must not
+    /// break the binding.
+    ///
+    /// Deliberately NFC and not NFKC: a fullwidth `Ｍedic` merely *looks* like
+    /// `Medic`, so it is a different name and must break the binding. Folding
+    /// look-alikes is `PeerDisplayNameResolver.collisionKey`'s job, which is
+    /// asking a different question — whether two peers need telling apart.
+    var nicknameBindingKey: String {
+        normalizedNickname.lowercased().normalizedNickname
+    }
+
     /// Strips ONLY a trailing `#abcd` collision suffix, leaving everything
     /// else alone.
     ///
@@ -27,8 +43,14 @@ extension String {
     var withoutCollisionSuffix: String {
         guard count >= 5 else { return self }
         let tail = suffix(5)
-        guard tail.first == "#",
-              tail.dropFirst().allSatisfy({ $0.isHexDigit }) else { return self }
+        // ASCII hex only, matching how `splitSuffix()` recognises the suffix
+        // this device generates. `Character.isHexDigit` would also accept
+        // fullwidth digits, so a nickname literally ending in "#ＡＢＣＤ"
+        // would be truncated and could then match a baseline it is not.
+        let isAsciiHex: (Character) -> Bool = { c in
+            ("0"..."9").contains(c) || ("a"..."f").contains(c) || ("A"..."F").contains(c)
+        }
+        guard tail.first == "#", tail.dropFirst().allSatisfy(isAsciiHex) else { return self }
         return String(dropLast(5))
     }
 

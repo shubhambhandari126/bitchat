@@ -69,6 +69,28 @@ struct PeerDisplayNameResolverTests {
     }
 
     @Test
+    func theSenderDisplayNameResolverFoldsTheSameWay() {
+        // Collisions are counted in TWO places. This one feeds sender names on
+        // file transfers and had the same exact-match blind spot; folding only
+        // the peer-list resolver would have left it behind.
+        let mine = PeerID(str: "cccc3333")
+        func info(_ id: PeerID, _ nickname: String) -> BLEPeerInfo {
+            BLEPeerInfo(peerID: id, nickname: nickname, isConnected: true,
+                        noisePublicKey: nil, signingPublicKey: nil,
+                        isVerifiedNickname: true, lastSeen: Date())
+        }
+        let peers: [PeerID: BLEPeerInfo] = [
+            real: info(real, "Medic"),
+            other: info(other, "\u{FF2D}edic"),
+        ]
+        let name = BLEPeerSenderDisplayName.resolveKnownPeer(
+            peerID: other, localPeerID: mine, localNickname: "me",
+            peers: peers, allowConnectedUnverified: true)
+        #expect(name?.contains("#") == true,
+                "a fullwidth namesake must be suffixed here too")
+    }
+
+    @Test
     func theDisplayedNameIsNeverFolded() {
         // Only the collision KEY folds. What is shown stays as its owner typed
         // it, suffix aside.
